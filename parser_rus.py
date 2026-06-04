@@ -8,7 +8,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 INPUT_FILE = 'sources.txt'
-OUTPUT_FILE = 'YaltaVPN - Subscription.txt'
+OUTPUT_FILE = 'YaltaVPN - Subscription'
 LOG_FILE = 'log.csv'
 
 def extract_urls(file_path):
