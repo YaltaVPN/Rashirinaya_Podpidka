@@ -1,15 +1,14 @@
 import os
 import re
 import base64
-import gzip
 import urllib.request
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- НАСТРОЙКИ ---
 SOURCES_FILE = "sources.txt"               # Файл с вашими ссылками-источниками
-OUTPUT_FILE = "YaltaVPN - Subscription.gz"  # Итоговый сжатый файл подписки (добавлен .gz)
-MAX_MB = 95                                 # Жесткий лимит размера готового АРХИВА (в МБ)
+OUTPUT_FILE = "YaltaVPN - Subscription"     # Итоговый текстовый файл подписки
+MAX_MB = 95                                 # Жесткий лимит размера текстового файла (в МБ)
 MAX_WORKERS = 20                            # Количество одновременных потоков скачивания
 TIMEOUT = 10                                # Таймаут ожидания ответа от сайтов (в секундах)
 
@@ -69,12 +68,12 @@ def fetch_source(url):
         pass  # Игнорируем ошибки недоступных сайтов
     return proxies
 
-def save_with_gzip_compression(file_path, proxies_list, max_mb):
+def save_with_strict_limit(file_path, proxies_list, max_mb):
     """
-    Фильтрует дубликаты, сжимает данные в формат GZIP 
-    и контролирует, чтобы получившийся архив не превышал max_mb.
+    Фильтрует дубликаты, склеивает конфиги в чистый текст 
+    и контролирует, чтобы итоговый текстовый файл строго не превышал max_mb.
     """
-    # 1. Очистка от дубликатов
+    # 1. Очистка от дубликатов с сохранением порядка
     seen = set()
     unique_proxies = []
     for p in proxies_list:
@@ -84,40 +83,34 @@ def save_with_gzip_compression(file_path, proxies_list, max_mb):
             unique_proxies.append(clean)
             
     max_bytes = max_mb * 1024 * 1024
+    current_size_bytes = 0
+    safe_proxies = []
     
-    # Внутренняя функция для записи данных в GZIP
-    def write_gzip(proxies_to_write):
-        with gzip.open(file_path, "wt", encoding="utf-8") as f:
-            for proxy in proxies_to_write:
-                f.write(f"{proxy}\n")
-        return os.path.getsize(file_path)
-
-    # 2. Первичная попытка сжать абсолютно все найденные уникальные конфиги
-    current_archive_size = write_gzip(unique_proxies)
-    
-    # 3. Если сжатый (!) файл всё равно больше 95 МБ (это миллионы прокси),
-    # пропорционально обрезаем список и пересохраняем.
-    if current_archive_size > max_bytes:
-        print(f"\n⚠️ Даже в сжатом виде архив ({current_archive_size / (1024*1024):.2f} МБ) превышает лимит {max_mb} МБ!")
-        print("Запущена процедура безопасного отсечения лишних данных...")
+    # 2. Построчно считаем точный физический вес текста в байтах (UTF-8)
+    for proxy in unique_proxies:
+        line = f"{proxy}\n"
+        line_size = len(line.encode('utf-8'))
         
-        while current_archive_size > max_bytes and len(unique_proxies) > 0:
-            # Рассчитываем коэффициент превышения и уменьшаем размер списка прокси
-            reduction_factor = max_bytes / current_archive_size
-            new_count = int(len(unique_proxies) * reduction_factor * 0.95) # 5% запас
+        # Если добавление этой строки пробьет лимит в 95 МБ — останавливаем сбор
+        if current_size_bytes + line_size > max_bytes:
+            print(f"\n⚠️ Достигнут жесткий лимит размера текстового файла ({max_mb} МБ)!")
+            print(f"Сбор остановлен. Сохранено {len(safe_proxies)} из {len(unique_proxies)} доступных конфигов.")
+            break
             
-            unique_proxies = unique_proxies[:new_count]
-            current_archive_size = write_gzip(unique_proxies)
-            
-        print(f"Отрезано лишнее. Новое количество конфигов в архиве: {len(unique_proxies)}")
+        safe_proxies.append(line)
+        current_size_bytes += line_size
 
-    # Выводим финальную статистику
-    print(f"\n✅ Подписка успешно СЖАТА и сохранена: '{file_path}'")
-    print(f"📦 Размер GZIP-архива на диске: {current_archive_size / (1024 * 1024):.2f} МБ")
-    print(f"🔢 Упаковано уникальных конфигов: {len(unique_proxies)}")
+    # 3. Полностью перезаписываем файл (режим 'w', чистый некодированный текст)
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.writelines(safe_proxies)
+        
+    final_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+    print(f"\n✅ Подписка успешно обновлена: '{file_path}'")
+    print(f"📦 Размер текстового файла на диске: {final_size_mb:.2f} МБ")
+    print(f"🔢 Всего уникальных конфигов сохранено: {len(safe_proxies)}")
 
 def main():
-    print("🚀 Запуск многопоточного парсера YaltaVPN с GZIP-сжатием...")
+    print("🚀 Запуск многопоточного парсера YaltaVPN (Текстовый лимит 95 МБ)...")
     
     # 1. Загрузка ссылок
     urls = load_sources(SOURCES_FILE)
@@ -148,8 +141,8 @@ def main():
                 
     print(f"\n✨ Сбор завершен. Найдено сырых записей: {len(all_collected_proxies)}")
     
-    # 3. Сохранение с реальным GZIP-сжатием и лимитом в 95 МБ
-    save_with_gzip_compression(OUTPUT_FILE, all_collected_proxies, MAX_MB)
+    # 3. Сохранение в чистый текст с лимитом
+    save_with_strict_limit(OUTPUT_FILE, all_collected_proxies, MAX_MB)
 
 if __name__ == "__main__":
     main()
